@@ -4,4 +4,9 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ipykernel>=6.29.5",
+    "loguru>=0.7.3",
+    "pandas>=2.3.0",
+    "pyagrum>=2.1.1",
+]

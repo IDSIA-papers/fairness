@@ -1,10 +1,5 @@
-import typing as ty
 from collections import abc, deque
 from itertools import combinations
-
-import pyagrum as gum
-
-from mrf.network.utils import deepcopy
 
 
 def find_neighbours(node: int, edges: set[tuple[int, ...]]) -> set[int]:

@@ -3,7 +3,6 @@ import typing as tp
 from dataclasses import dataclass, field
 from functools import reduce
 from operator import mul
-from platform import node
 from textwrap import dedent
 
 import numpy as np
@@ -12,7 +11,7 @@ import pyagrum as gum
 from loguru import logger
 
 from mrf.inference.ordering import greedy_ordering, minfill_metric
-from mrf.network.utils import deepcopy, ids, ids_dict, names, names_dict
+from mrf.network.utils import ids, ids_dict, names, names_dict
 
 
 class ProjectionOperation(enum.Enum):
