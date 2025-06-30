@@ -39,3 +39,10 @@ build/
 *.njsproj
 *.sln
 *.sw?
+
+notebooks/
+
+data/old_data/
+data/output/
+data/output_non_forced/
+data/output_forced/
