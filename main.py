@@ -1,5 +1,5 @@
 def main():
-    print("Hello from idsia-fairness-2025!")
+    print("Hello from aequitas2025-fairness!")
 
 
 if __name__ == "__main__":
