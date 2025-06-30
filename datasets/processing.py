@@ -214,7 +214,7 @@ def compute_time_ratios(
     Returns:
         pd.Series: A series containing the ratio of processing times for each row.
     """
-    individual_fairness_bn = individual_fairness_bn.dropna()
+    individual_fairness_bn = individual_fairness_bn.dropna(subset=["ID_row"])
     individual_fairness_mrf = individual_fairness_mrf.dropna()
 
     joined_df = individual_fairness_bn.merge(
@@ -223,7 +223,9 @@ def compute_time_ratios(
         right_on=individual_fairness_mrf.index,
         how="right",
     )
-    joined_df = joined_df[["Time_row", "Row_Processing_Time"]].drop_duplicates()
+    joined_df = (
+        joined_df[["Time_row", "Row_Processing_Time"]].drop_duplicates().dropna()
+    )
     joined_df["Ratio"] = joined_df["Row_Processing_Time"] / joined_df["Time_row"]
 
     if remove_outliers:

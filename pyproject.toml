@@ -10,5 +10,5 @@ dependencies = [
     "pandas>=2.3.0",
     "pyagrum>=2.1.1",
     "scikit-learn>=1.7.0",
-    "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
 ]
