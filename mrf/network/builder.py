@@ -1,5 +1,3 @@
-from venv import logger
-
 import pyagrum as gum
 
 from .utils import convert_bn_to_moral_graph, extract_clique_families
@@ -79,6 +77,7 @@ def BNtoRatioMRF(
     Args:
         bn (gum.BayesNet): The Bayesian network to be converted.
         target (int): The target variable.
+        normalize (bool): Whether to normalize the potentials. Defaults to False.
 
     Returns:
         gum.MarkovRandomField: The resulting Markov Random Field.
@@ -100,11 +99,11 @@ def BNtoRatioMRF(
     children_of_target = bn.children(target)
 
     # add all the variables to the MRF but the target variable
-    for node in bn.nodes():
+    for node in bn.nodes():  # type: ignore
         if node != target:
             mrf.add(bn.variable(node))
 
-    for node in bn.nodes():
+    for node in bn.nodes():  # type: ignore
         if node == target or node in children_of_target:
             target_varname = bn.variable(target).name()
             target_domain = bn.variable(target).labels()

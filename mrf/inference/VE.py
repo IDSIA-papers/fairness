@@ -60,7 +60,7 @@ class VariableElimination:
         else:
             # self.PGM = deepcopy(self.PGM)
             if isinstance(self.PGM, gum.BayesNet):
-                self.PGM = gum.BayesNet(self.PGM)
+                self.PGM = gum.BayesNet(self.PGM)  # type: ignore
             else:
                 self.PGM = gum.MarkovRandomField(self.PGM)
         # logger.success(f"Variable Elimination initialized with MRF: {self.MRF}")
@@ -112,12 +112,12 @@ class VariableElimination:
             )
 
         # self.elimination_ordering = greedy_ordering(self.MRF, minfill_metric)
-        nodes = self.PGM.nodes()  # type: ignore
-        edges = (
+        nodes: set[int] = self.PGM.nodes()  # type: ignore
+        edges: set[tuple[int, int]] = (
             self.PGM.edges()
             if isinstance(self.PGM, gum.MarkovRandomField)
             else self.PGM.arcs()
-        )
+        )  # type: ignore
         elimination_ordering = greedy_ordering(
             nodes=nodes,
             edges=edges,

@@ -1,8 +1,6 @@
 import collections.abc as abc
 import typing as ty
-from functools import reduce
 from itertools import combinations
-from operator import iconcat
 
 import pyagrum as gum
 
@@ -102,7 +100,16 @@ def ids_dict(
     net: gum.BayesNet | gum.MarkovRandomField,
     names_dict: abc.Mapping[str | int, ty.Any],
 ) -> dict[int, ty.Any]:
-    """Convert the keys of a dictionary to their corresponding IDs."""
+    """Convert the keys of a dictionary to their corresponding IDs.
+
+    Args:
+        net (gum.BayesNet | gum.MarkovRandomField): The network from which to
+            get the IDs.
+        names_dict (abc.Mapping[str | int, ty.Any]): A dictionary with variable
+            names or IDs as keys.
+    Returns:
+        dict[int, ty.Any]: A dictionary with variable IDs as keys and their
+    """
     _ids_to_val = {}
     names = names_dict.keys()
     _ids = ids(net, names)
@@ -133,28 +140,6 @@ def to_str_dict(
 
         _str_dict[str_key] = str_value
     return _str_dict
-
-
-def flatten(lst: list[abc.Iterable]) -> list:
-    return reduce(iconcat, lst, [])
-
-
-def partition_vars(bn: gum.BayesNet | gum.MarkovRandomField):
-    """Returns the BN's variables partitioned in target, sensitive and public variables."""
-    varnames = bn.names()
-
-    partitions: dict[str, list[str]] = {"target": [], "private": [], "public": []}
-    for name in varnames:
-        if name.startswith("T"):
-            partitions["target"].append(name)
-        elif name.startswith("S"):
-            partitions["private"].append(name)
-
-    partitions["public"] = list(
-        set(varnames) - (set(partitions["target"]) | set(partitions["private"]))
-    )
-
-    return partitions
 
 
 #################################################################
@@ -257,23 +242,3 @@ def extract_maximal_cliques(bn: gum.BayesNet) -> list[set[int]]:
 
     G = convert_bn_to_moral_graph_nx(bn)
     return [set(clique) for clique in nx.find_cliques(G)]
-
-
-def deepcopy(mrf: gum.MarkovRandomField) -> gum.MarkovRandomField:
-    """Deep copy a Markov Random Field."""
-
-    mrf_copy = gum.MarkovRandomField()
-
-    for node in mrf.nodes():
-        mrf_copy.add(mrf.variable(node))
-    for factor in mrf.factors():
-        factor_data = mrf.factor(factor)
-        factor_copy = gum.Tensor()
-        for var in factor_data.names:
-            factor_copy.add(mrf.variable(var))
-
-        factor_copy[:] = factor_data.toarray()
-
-        mrf_copy.addFactor(factor_copy)
-
-    return mrf_copy
