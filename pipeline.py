@@ -1,3 +1,5 @@
+import argparse
+import json
 import typing as ty
 from pathlib import Path
 
@@ -24,7 +26,7 @@ from datasets.processing import (
 )
 from metrics.evaluate import (
     evaluate_bn_performance,
-    visualize_and_export_metrics,
+    # visualize_and_export_metrics,
 )
 from metrics.fairness import (
     analyze_individual_fairness_metrics,
@@ -41,6 +43,7 @@ def main(
     learning_method: ty.Literal["tabu", "greedy", "miic", "k2"] = "tabu",
     learning_parameters=None,
     data_path: str | Path = "./data",
+    save_path: str | Path = "./data/output_non_forced",
     drop_duplicates: bool = False,
 ):
     """
@@ -51,7 +54,11 @@ def main(
     data_path = Path("./data")
     data_path.mkdir(parents=True, exist_ok=True)
 
-    save_path_output = data_path / "output_non_forced"
+    if save_path is None:
+        save_path_output = data_path / "output_non_forced"
+    else:
+        save_path_output = Path(save_path)
+
     save_path_output.mkdir(parents=True, exist_ok=True)
 
     # save_path_individual_results = data_path / "individual_results"
@@ -343,12 +350,65 @@ def main(
             save_path=save_path_output_dataset,
         )
 
-    if top_metrics_to_dataset:
-        print("\nVisualizing and exporting fairness metrics...")
-        # visualize_and_export_metrics(
-        #     top_metrics=top_metrics_to_dataset, output_dir=save_path_output.as_posix()
-        # )
+    # if top_metrics_to_dataset:
+    # print("\nVisualizing and exporting fairness metrics...")
+    # visualize_and_export_metrics(
+    #     top_metrics=top_metrics_to_dataset, output_dir=save_path_output.as_posix()
+    # )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Run the fairness analysis pipeline using Bayesian networks."
+    )
+    parser.add_argument(
+        "--learning_method",
+        type=str,
+        choices=["tabu", "greedy", "miic", "k2"],
+        default="tabu",
+        help="Learning method for Bayesian network structure.",
+    )
+
+    parser.add_argument(
+        "--learning_parameters",
+        type=str,
+        default="{}",
+        help="JSON string of learning parameters for the Bayesian network.",
+    )
+
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="./data",
+        help="Path to the directory containing the datasets.",
+    )
+
+    parser.add_argument(
+        "--save_path",
+        type=str,
+        default="./data/output_non_forced",
+        help="Path to save the output results.",
+    )
+
+    parser.add_argument(
+        "--drop_duplicates",
+        action="store_false",
+        help="Whether to drop duplicate rows in the datasets.",
+    )
+
+    args = parser.parse_args()
+
+    # Convert learning_parameters from string to dictionary
+    try:
+        learning_parameters = json.loads(args.learning_parameters)
+    except json.JSONDecodeError:
+        logger.error("Invalid JSON string for learning parameters.")
+        learning_parameters = {}
+
+    main(
+        learning_method=args.learning_method,
+        learning_parameters=learning_parameters,
+        data_path=args.data_path,
+        save_path=args.save_path,
+        drop_duplicates=args.drop_duplicates,
+    )
