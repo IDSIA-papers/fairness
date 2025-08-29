@@ -420,8 +420,8 @@ def compute_individual_fairness(
                 "Modified_States": " and ".join(modified_states),
                 "Posterior_Original": posterior_original,
                 "Posterior_Modified": posterior_modified,
-                "kl_div": kl_div_value,
-                "Manhattan_Distance": manhattan_distance,
+                "KL_Robustness_Individual": kl_div_value,
+                "Man_Robustness_Individual": manhattan_distance,
                 "Predicted_Value": predicted_value,
                 "Prediction_Correct": match_flag,
             }
@@ -448,9 +448,12 @@ def compute_individual_fairness(
         # Update all the results for this row with robustness metrics
         for result in results:
             if result["ID_row"] == row_id:
-                result["Man_Robustness"] = max_manhattan
-                result["KL_Robustness"] = max_kl
-                result["Row_Processing_Time"] = row_end_time
+                result["Man_Robustness_Max"] = max_manhattan
+                result["KL_Robustness_Max"] = max_kl
+                result["Man_Robustness_Individual"] = result[
+                    "Man_Robustness_Individual"
+                ]
+                result["KL_Robustness_Individual"] = result["KL_Robustness_Individual"]
 
     logger.success(f"Done with {name}. Processed {len(results)} combinations.")
 
@@ -512,14 +515,14 @@ def analyze_individual_fairness_metrics(
     for idx, row in enumerate(individual_fairness.iterrows()):
         row_data = row[1]
 
-        if row_data["kl_div"] < 0.05:  # threshold
+        if row_data["KL_Robustness_Individual"] < 0.05:  # threshold
             continue
 
         kl_entry = (
-            row_data["kl_div"],
+            row_data["KL_Robustness_Individual"],
             idx,
             {
-                "KL": row_data["kl_div"],
+                "KL": row_data["KL_Robustness_Individual"],
                 "att1": row_data["Modified_Attributes"],
                 "state1": row_data["Original_States"],
                 "att2": row_data["Modified_Attributes"],
@@ -537,10 +540,10 @@ def analyze_individual_fairness_metrics(
             },
         )
         manhattan_entry = (
-            row_data["Manhattan_Distance"],
+            row_data["Man_Robustness_Individual"],
             idx,
             {
-                "MAN": row_data["Manhattan_Distance"],
+                "MAN": row_data["Man_Robustness_Individual"],
                 "att1": row_data["Modified_Attributes"],
                 "state1": row_data["Original_States"],
                 "att2": row_data["Modified_Attributes"],
@@ -796,7 +799,7 @@ def compute_individual_fairness_MRF(
         mrf_inference_record = {"ID_row": id}
         individual_fairness_row = individual_fairness_df.query(
             f"ID_row == {id}"
-        ).sort_values(by="Manhattan_Distance", ascending=False)
+        ).sort_values(by="Man_Robustness_Individual", ascending=False)
 
         original_public_data = extract_row_data(
             individual_fairness_row.iloc[0], public_features
@@ -889,8 +892,8 @@ def compute_individual_fairness_MRF(
             mrf, mrf_star_assignment
         )
         mrf_inference_record["Posterior_Star"] = posterior_star
-        mrf_inference_record["Manhattan_Distance"] = manhattan_distance
-        mrf_inference_record["KL_Divergence"] = kl_divergence
+        mrf_inference_record["Man_Robustness_Star"] = manhattan_distance
+        mrf_inference_record["KL_Divergenge_Star"] = kl_divergence
 
         mrf_inference_record["Match_assignments"] = (
             mrf_inference_record["BN_Star_Assignment"]
