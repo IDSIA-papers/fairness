@@ -527,7 +527,7 @@ def plot_brier_vs_robustness(
         reference_diagonal_lines: Whether to add reference diagonal lines (default=True).
     """
     if drop_duplicates:
-        filtered_analysis_data = fairness_analysis_data.drop_duplicates(
+        filtered_analysis_data = fairness_analysis_data.reset_index().drop_duplicates(
             subset=["ID_row"]
         )
     else:

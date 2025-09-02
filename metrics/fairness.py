@@ -450,6 +450,7 @@ def compute_individual_fairness(
             if result["ID_row"] == row_id:
                 result["Man_Robustness_Max"] = max_manhattan
                 result["KL_Robustness_Max"] = max_kl
+                result["Row_Processing_Time"] = row_end_time
                 result["Man_Robustness_Individual"] = result[
                     "Man_Robustness_Individual"
                 ]
@@ -893,7 +894,7 @@ def compute_individual_fairness_MRF(
         )
         mrf_inference_record["Posterior_Star"] = posterior_star
         mrf_inference_record["Man_Robustness_Star"] = manhattan_distance
-        mrf_inference_record["KL_Divergenge_Star"] = kl_divergence
+        mrf_inference_record["KL_Divergence_Star"] = kl_divergence
 
         mrf_inference_record["Match_assignments"] = (
             mrf_inference_record["BN_Star_Assignment"]

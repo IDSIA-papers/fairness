@@ -5,6 +5,7 @@ import pandas as pd
 from loguru import logger
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import KBinsDiscretizer
+from sklearn.model_selection import StratifiedKFold
 
 
 def detect_column_types(
@@ -116,7 +117,10 @@ def make_columns_categorical(
 
 
 def split_dataset(
-    df: pd.DataFrame, target_column: str, test_size: float = 0.5, random_state: int = 42
+    df: pd.DataFrame, 
+    target_column: str, 
+    test_size: float = 0.5, 
+    random_state: int = 42
 ) -> ty.Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Splits a dataset into training and testing sets with stratification on the target variable. Ensures that
@@ -131,33 +135,24 @@ def split_dataset(
     Returns:
         Tuple[pd.DataFrame, pd.DataFrame]: The training and testing datasets.
     """
-    # Make sure target column exists in the dataframe
     if target_column not in df.columns:
         raise ValueError(f"Target column '{target_column}' not found in the dataframe")
 
-    # Step 1: Ensure representation of all unique values in the training set
-    # Create a set to store indices of rows that must be in the training set
     required_indices = set()
 
-    # For each column, find one example of each unique value
     for column in df.columns:
         for unique_val in df[column].unique():
-            # Find indices of rows that have this value
             indices = df[df[column] == unique_val].index
             if len(indices) > 0:
-                # Add the first occurrence to required indices
                 required_indices.add(indices[0])
 
     required_df = df.loc[list(required_indices)].copy()
     remaining_df = df.drop(index=list(required_indices)).copy()
 
-    # Step 2: Calculate how many more samples we need for a 50/50 split
     total_train_size = int(len(df) * (1 - test_size))
     additional_train_size = total_train_size - len(required_df)
 
-    # Step 3: Split the remaining data with stratification
     if len(remaining_df) > 0 and additional_train_size > 0:
-        # Stratify the remaining portion
         remaining_train, test_df = train_test_split(
             remaining_df,
             test_size=len(remaining_df) - additional_train_size,
@@ -167,25 +162,19 @@ def split_dataset(
             else None,
         )
 
-        # Combine the required rows with the additional stratified training rows
         train_df = pd.concat([required_df, remaining_train])
     else:
-        # If we've already selected too many required samples or have no remaining data
         if len(required_df) <= total_train_size:
             train_df = required_df
             test_df = df.drop(index=list(required_indices))
         else:
-            # If we have more required samples than our target train size,
-            # we need to move some to the test set
             train_indices = list(required_indices)[:total_train_size]
             train_df = df.loc[train_indices].copy()
             test_df = df.drop(index=train_indices).copy()
 
-    # Reset indices for both dataframes
     train_df = train_df.reset_index(drop=True)
     test_df = test_df.reset_index(drop=True)
 
-    # Print split statistics
     logger.info(
         f"Dataset split into train ({len(train_df)} rows) and test ({len(test_df)} rows)"
     )
@@ -218,10 +207,9 @@ def compute_time_ratios(
     individual_fairness_mrf = individual_fairness_mrf.dropna()
 
     joined_df = individual_fairness_bn.merge(
-        individual_fairness_mrf,
-        left_on="ID_row",
-        right_on=individual_fairness_mrf.index,
-        how="right",
+    individual_fairness_mrf,
+    on="ID_row",
+    how="right",
     )
     joined_df = (
         joined_df[["Time_row", "Row_Processing_Time"]].drop_duplicates().dropna()
@@ -239,3 +227,53 @@ def compute_time_ratios(
         save_path = Path(save_path)
         joined_df.to_csv(save_path / "time_ratios.csv", index=False)
     return joined_df
+
+
+def stratified_kfold_split(
+    df: pd.DataFrame,
+    target_column: str,
+    n_splits: int = 5,
+    shuffle: bool = True,
+    random_state: int = 42,
+) -> ty.Generator[ty.Tuple[pd.DataFrame, pd.DataFrame], None, None]:
+    """
+    Splits a dataset into stratified K-Folds, ensuring all unique values for every column
+    are present in the training set of each fold.
+
+    Args:
+        df (pd.DataFrame): The dataframe to split.
+        target_column (str): The name of the target column to stratify on.
+        n_splits (int): Number of folds. Must be at least 2.
+        shuffle (bool): Whether to shuffle each class's samples before splitting.
+        random_state (int): Random seed for shuffling.
+
+    Yields:
+        Tuple[pd.DataFrame, pd.DataFrame]: The training and testing datasets for each fold.
+    """
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in the dataframe")
+
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=shuffle, random_state=random_state)
+    X = df.drop(columns=[target_column])
+    y = df[target_column]
+
+    for train_index, test_index in skf.split(X, y):
+        train_df = df.iloc[train_index].copy()
+        test_df = df.iloc[test_index].copy()
+
+        required_indices = set()
+        for column in df.columns:
+            for unique_val in df[column].unique():
+                indices = df[df[column] == unique_val].index
+                if len(indices) > 0:
+                    required_indices.add(indices[0])
+
+        missing_required = required_indices - set(train_df.index)
+        if missing_required:
+            train_df = pd.concat([train_df, df.loc[list(missing_required)]])
+            test_df = test_df.drop(index=missing_required, errors="ignore")
+
+        train_df = train_df.reset_index(drop=True)
+        test_df = test_df.reset_index(drop=True)
+
+        yield train_df, test_df

@@ -2,6 +2,8 @@ import argparse
 import json
 import typing as ty
 from pathlib import Path
+from sklearn.metrics import classification_report
+from textwrap import dedent
 
 from loguru import logger
 
@@ -23,6 +25,7 @@ from datasets.processing import (
     compute_time_ratios,
     make_columns_categorical,
     split_dataset,
+    stratified_kfold_split,
 )
 from metrics.evaluate import (
     evaluate_bn_performance,
@@ -104,6 +107,107 @@ def main(
         # Split dataset into train and test sets
         train_df, test_df = split_dataset(
             df=dataset, target_column=target, test_size=0.5, random_state=42
+        )
+
+        # Initialize lists to collect metrics for each fold
+        accuracies = []
+        brier_scores = []
+        performance_results_folds = []
+        test_df_metrics_folds = []
+    
+        # Stratified k-fold split
+        for fold, (train_idx, val_idx) in enumerate(
+            stratified_kfold_split(
+                df=dataset,
+                target_column=target,
+                n_splits=10,
+                shuffle=True,
+                random_state=42,
+            )
+        ):
+            logger.info(f"Training fold {fold + 1}...")
+            train_idx = train_idx.reset_index(drop=True)
+            val_idx = val_idx.reset_index(drop=True)
+
+            # Add arcs from sensible features to target
+            learning_params = add_sensible_to_target_arcs(
+                learning_params=learning_parameters,
+                sensible_features=sensible_features,
+                target=target,
+            )
+
+            logger.debug(
+                f"Learning parameters after adding sensible features: {learning_params}"
+            )
+
+            # from here add stratified k-fold
+            # Learn Bayesian network on the training dataset
+
+            bn = learn_bayesian_network(
+                dataset=train_idx,
+                df_name=name,
+                target=target,
+                show=False,
+                learning_method=learning_method,
+                learning_params=learning_params,
+                save_path=None,
+            )
+
+            # Simplify network by removing independent nodes
+            # This will be used to compute the performance metrics
+            bn = simplification_1(bn, name, target)
+
+            # Check which sensible features remain relevant
+            sensible_features_copy = sensible_features.copy()
+            for sensible_feature in sensible_features_copy:
+                if sensible_feature not in bn.names():
+                    logger.info(
+                        f"Sensible feature {sensible_feature} is not relevant for the target"
+                    )
+                    sensible_features.remove(sensible_feature)
+
+            # Save the simplified network
+            visualize_bn(
+                bn,
+                name,
+                learning_method=learning_method,
+                save_path=save_path_output_dataset.as_posix(),
+                simple="simple1",
+                show_graph=False
+            )
+
+            # Create inference engine
+            base_ie = build_inference_engine(bn)
+
+            # Get base posterior of the target variable (marginal distribution)
+            base_posterior = base_ie.posterior(target).toarray()
+
+            # Evaluate performance
+            performance_results, test_df_metrics = evaluate_bn_performance(
+                bn=bn,
+                ie=base_ie,
+                test_df=val_idx,
+                target_column=target,
+                save_path=save_path_output_dataset,
+                verbose=False,
+                drop_duplicates=drop_duplicates,
+            )
+
+            accuracies.append(performance_results["accuracy"])
+            brier_scores.append(performance_results["brier_scores"])
+            performance_results_folds.append(performance_results)
+            test_df_metrics_folds.append(test_df_metrics)
+
+        all_true = []
+        all_pred = []
+
+        for fold in test_df_metrics_folds:
+            all_true.extend(fold["True_Values"].astype(str).tolist())
+            all_pred.extend(fold["Predicted"].astype(str).tolist())
+
+        # Average classification report
+        logger.info(
+            dedent(f"Classification Report average cross validation: \n{classification_report(all_true, all_pred)}")
         )
 
         # Add arcs from sensible features to target
@@ -282,7 +386,7 @@ def main(
         plot_brier_vs_robustness(
             fairness_analysis_data=individual_fairness,
             filename_prefix=f"{name}_individual_fairness",
-            robustness_column_key="Man_Robustness",
+            robustness_column_key="Man_Robustness_Max",
             robustness_bins_strategy="quantile",
             n_bins_brier=5,
             n_bins_robustness=8,
@@ -293,7 +397,7 @@ def main(
         plot_brier_vs_robustness(
             fairness_analysis_data=individual_fairness,
             filename_prefix=f"{name}_individual_fairness_no_top",
-            robustness_column_key="Man_Robustness",
+            robustness_column_key="Man_Robustness_Max",
             robustness_bins_strategy="quantile",
             n_bins_brier=5,
             n_bins_robustness=8,
@@ -305,7 +409,7 @@ def main(
         plot_brier_vs_robustness(
             fairness_analysis_data=individual_fairness,
             filename_prefix=f"{name}_individual_fairness_KL",
-            robustness_column_key="KL_Robustness",
+            robustness_column_key="KL_Robustness_Max",
             robustness_bins_strategy="quantile",
             n_bins_brier=5,
             n_bins_robustness=8,
@@ -317,7 +421,7 @@ def main(
         plot_brier_vs_robustness(
             fairness_analysis_data=individual_fairness_mrf,
             filename_prefix=f"{name}_individual_fairness_mrf",
-            robustness_column_key="Manhattan_Distance",
+            robustness_column_key="Man_Robustness_Star",
             robustness_bins_strategy="quantile",
             n_bins_brier=5,
             n_bins_robustness=8,
@@ -328,7 +432,7 @@ def main(
         plot_brier_vs_robustness(
             fairness_analysis_data=individual_fairness_mrf,
             filename_prefix=f"{name}_individual_fairness_mrf_KL",
-            robustness_column_key="KL_Divergence",
+            robustness_column_key="KL_Divergence_Star",
             robustness_bins_strategy="quantile",
             n_bins_brier=5,
             n_bins_robustness=8,
@@ -386,7 +490,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_path",
         type=str,
-        default="./data/output_non_forced",
+        default="./data/output_forced",
         help="Path to save the output results.",
     )
 
