@@ -2,10 +2,10 @@ import argparse
 import json
 import typing as ty
 from pathlib import Path
-from sklearn.metrics import classification_report
 from textwrap import dedent
 
 from loguru import logger
+from sklearn.metrics import classification_report
 
 from bayesian.inference import (
     build_inference_engine,
@@ -29,7 +29,6 @@ from datasets.processing import (
 )
 from metrics.evaluate import (
     evaluate_bn_performance,
-    # visualize_and_export_metrics,
 )
 from metrics.fairness import (
     analyze_individual_fairness_metrics,
@@ -46,7 +45,7 @@ def main(
     learning_method: ty.Literal["tabu", "greedy", "miic", "k2"] = "tabu",
     learning_parameters=None,
     data_path: str | Path = "./data",
-    save_path: str | Path = "./data/output_non_forced",
+    save_path: str | Path = "./data/straight_output",
     drop_duplicates: bool = False,
 ):
     """
@@ -58,7 +57,7 @@ def main(
     data_path.mkdir(parents=True, exist_ok=True)
 
     if save_path is None:
-        save_path_output = data_path / "output_non_forced"
+        save_path_output = data_path / "test"
     else:
         save_path_output = Path(save_path)
 
@@ -90,6 +89,8 @@ def main(
 
     # Process each dataset
     for name, dataset in dfs.items():
+        if not name == "bank_marketing":
+            continue
         logger.info("-" * 70)
         logger.info(f"Fairness analysis on dataset: {name}")
 
@@ -114,7 +115,8 @@ def main(
         brier_scores = []
         performance_results_folds = []
         test_df_metrics_folds = []
-    
+        kfold_bns = []
+
         # Stratified k-fold split
         for fold, (train_idx, val_idx) in enumerate(
             stratified_kfold_split(
@@ -173,7 +175,7 @@ def main(
                 learning_method=learning_method,
                 save_path=save_path_output_dataset.as_posix(),
                 simple="simple1",
-                show_graph=False
+                show_graph=False,
             )
 
             # Create inference engine
@@ -187,7 +189,7 @@ def main(
                 bn=bn,
                 ie=base_ie,
                 test_df=val_idx,
-                target_column=target,
+                target=target,
                 save_path=save_path_output_dataset,
                 verbose=False,
                 drop_duplicates=drop_duplicates,
@@ -197,6 +199,7 @@ def main(
             brier_scores.append(performance_results["brier_scores"])
             performance_results_folds.append(performance_results)
             test_df_metrics_folds.append(test_df_metrics)
+            kfold_bns.append(bn)
 
         all_true = []
         all_pred = []
@@ -207,7 +210,9 @@ def main(
 
         # Average classification report
         logger.info(
-            dedent(f"Classification Report average cross validation: \n{classification_report(all_true, all_pred)}")
+            dedent(
+                f"Classification Report average cross validation: \n{classification_report(all_true, all_pred)}"
+            )
         )
 
         # Add arcs from sensible features to target
@@ -265,7 +270,7 @@ def main(
             bn=bn,
             ie=base_ie,
             test_df=test_df,
-            target_column=target,
+            target=target,
             save_path=save_path_output_dataset,
             verbose=False,
             drop_duplicates=drop_duplicates,
@@ -337,6 +342,10 @@ def main(
         # combine train and test datasets to distinguish between them
         # dataset = combine_train_test(train_df, test_df_metrics)
 
+        new_public_features = [
+            feat for feat in public_features if feat in markov_blanket.names()
+        ]
+
         # Analyze individual fairness
         print("Analyzing individual fairness...")
         individual_fairness = compute_individual_fairness(
@@ -345,6 +354,7 @@ def main(
             markov_blanket,
             target,
             new_sensible_features,
+            new_public_features,
             sensible_states,
             learning_method=learning_method,
             save_path=save_path_output_dataset.as_posix(),
@@ -394,53 +404,6 @@ def main(
             save_path=save_path_output_dataset,
         )
 
-        plot_brier_vs_robustness(
-            fairness_analysis_data=individual_fairness,
-            filename_prefix=f"{name}_individual_fairness_no_top",
-            robustness_column_key="Man_Robustness_Max",
-            robustness_bins_strategy="quantile",
-            n_bins_brier=5,
-            n_bins_robustness=8,
-            drop_duplicates=drop_duplicates,
-            save_path=save_path_output_dataset,
-            show_top_subplot=False,
-        )
-
-        plot_brier_vs_robustness(
-            fairness_analysis_data=individual_fairness,
-            filename_prefix=f"{name}_individual_fairness_KL",
-            robustness_column_key="KL_Robustness_Max",
-            robustness_bins_strategy="quantile",
-            n_bins_brier=5,
-            n_bins_robustness=8,
-            drop_duplicates=drop_duplicates,
-            save_path=save_path_output_dataset,
-            reference_diagonal_lines=False,
-        )
-
-        plot_brier_vs_robustness(
-            fairness_analysis_data=individual_fairness_mrf,
-            filename_prefix=f"{name}_individual_fairness_mrf",
-            robustness_column_key="Man_Robustness_Star",
-            robustness_bins_strategy="quantile",
-            n_bins_brier=5,
-            n_bins_robustness=8,
-            drop_duplicates=drop_duplicates,
-            save_path=save_path_output_dataset,
-        )
-
-        plot_brier_vs_robustness(
-            fairness_analysis_data=individual_fairness_mrf,
-            filename_prefix=f"{name}_individual_fairness_mrf_KL",
-            robustness_column_key="KL_Divergence_Star",
-            robustness_bins_strategy="quantile",
-            n_bins_brier=5,
-            n_bins_robustness=8,
-            drop_duplicates=drop_duplicates,
-            save_path=save_path_output_dataset,
-            reference_diagonal_lines=False,
-        )
-
         timeratios = compute_time_ratios(
             individual_fairness_bn=individual_fairness,
             individual_fairness_mrf=individual_fairness_mrf,
@@ -453,12 +416,6 @@ def main(
             timeratios=timeratios,
             save_path=save_path_output_dataset,
         )
-
-    # if top_metrics_to_dataset:
-    # print("\nVisualizing and exporting fairness metrics...")
-    # visualize_and_export_metrics(
-    #     top_metrics=top_metrics_to_dataset, output_dir=save_path_output.as_posix()
-    # )
 
 
 if __name__ == "__main__":
