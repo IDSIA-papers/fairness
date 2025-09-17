@@ -1,5 +1,6 @@
 import itertools
 import typing as ty
+from operator import le
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -9,8 +10,9 @@ from loguru import logger
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.patches import bbox_artist
 from matplotlib.transforms import Bbox
-from sklearn.metrics import auc, precision_recall_curve, roc_curve
+from sklearn.metrics import accuracy_score, auc, precision_recall_curve, roc_curve
 
 from visualization.utils import plot_reference_lines
 
@@ -30,6 +32,9 @@ def plot_boxplot_timeratios(
         timeratios (pd.DataFrame): DataFrame containing time ratios with a column "Ratio".
         save_path (str | Path, optional): If provided, saves the plot to this directory.
     """
+    if len(timeratios) == 0:
+        logger.warning("No timeratios data provided or data is empty. Skipping plot.")
+        return
 
     plt.figure(figsize=(10, 1))
     plt.boxplot(
@@ -55,6 +60,8 @@ def plot_boxplot_timeratios(
         plt.savefig(
             save_path / f"{name}_{learning_method}_time_ratio.png",
             bbox_inches="tight",
+            format="pdf",
+            dpi=600,
         )
 
 
@@ -63,7 +70,7 @@ def plot_roc_pr_curves(
     y_probs: pd.Series,
     class_labels: list,
     title_prefix: str = "",
-    figsize: tuple[int, int] = (8, 4),
+    figsize: tuple[int, int] = (7, 4),
     save_path: ty.Optional[str | Path] = None,
 ) -> tuple[dict, dict, Figure]:
     """
@@ -118,7 +125,9 @@ def plot_roc_pr_curves(
 
     if save_path:
         plt.savefig(
-            Path(save_path) / f"{title_prefix}_roc_pr_curves_multiclass.png", dpi=300
+            Path(save_path) / f"{title_prefix}_roc_pr_curves_multiclass.pdf",
+            format="pdf",
+            dpi=600,
         )
 
     return roc_aucs, pr_aucs, fig
@@ -129,8 +138,9 @@ def plot_confusion_matrix_with_counts(
     class_labels: list,
     accuracy: float,
     save_path: ty.Optional[str | Path] = None,
-    figsize: tuple = (8, 6),
+    figsize: tuple = (5, 3),
     cmap: str = "Blues",
+    prefix: str = "confusion_matrix",
 ) -> Figure:
     """
     Plots a confusion matrix as a heatmap with count annotations, axis labels, and saves the plot if requested.
@@ -154,7 +164,7 @@ def plot_confusion_matrix_with_counts(
         interpolation="nearest",
         cmap=cmap,
     )
-    ax.set_title(f"Confusion Matrix - Accuracy: {accuracy:.4f}")
+    ax.set_title(f"Confusion matrix - Accuracy: {accuracy:.4f}")
     fig.colorbar(im, ax=ax)
 
     tick_marks = np.arange(len(class_labels))
@@ -187,8 +197,9 @@ def plot_confusion_matrix_with_counts(
         if not save_path.exists():
             save_path.mkdir(parents=True, exist_ok=True)
         fig.savefig(
-            (save_path / "confusion_matrix").with_suffix(".png"),
-            dpi=300,
+            (save_path / f"{prefix}_confusion_matrix").with_suffix(".pdf"),
+            format="pdf",
+            dpi=600,
         )
 
     return fig
@@ -207,8 +218,6 @@ def plot_boxplot_robustness_per_brier_score_bins(
     correct_median="black",
     incorrect_median="black",
     alpha=0.7,
-    save_path: ty.Optional[str | Path] = None,
-    filename_prefix: str = "",
 ):
     """
     Plots boxplots of robustness for each Brier score bin, with correct predictions on the LEFT
@@ -244,8 +253,8 @@ def plot_boxplot_robustness_per_brier_score_bins(
     data["bin"] = pd.cut(data[score_column], bins=bin_edges, include_lowest=True)
 
     # Prepare categories
-    correct = data[data["Prediction_Correct"]]
-    incorrect = data[~data["Prediction_Correct"]]
+    correct = data[data["Prediction_Correct"].astype(bool)]
+    incorrect = data[~data["Prediction_Correct"].astype(bool)]
 
     for i, interval in enumerate(data["bin"].cat.categories):
         center = bin_centers[i]
@@ -301,52 +310,21 @@ def plot_boxplot_robustness_per_brier_score_bins(
     ax.autoscale(enable=True, axis="x", tight=True)
     ax.set_ylabel("FRL")
     ax.set_xlim(bin_min - 0.05, bin_max + 0.05)
+    ax.set_ylim(0, 1.05)
     ax.grid(True, alpha=0.3, axis="both")
-
-    if save_path:
-        save_path = Path(save_path)
-        logger.info(f"Saving boxplot to {save_path}")
-        fig = ax.get_figure()
-        extent = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-
-        # Convert to coordinates
-        x0, y0, x1, y1 = extent.extents
-
-        # Set expansion (as a fraction of width/height)
-        expand_left = 0.1 * (x1 - x0)
-        expand_right = 0.1 * (x1 - x0)
-        expand_bottom = 0.15 * (y1 - y0)
-        expand_top = 0.10 * (y1 - y0)
-
-        # Create new expanded bbox
-        new_extent = Bbox.from_extents(
-            x0 - expand_left, y0 - expand_bottom, x1 + expand_right, y1 + expand_top
-        )
-
-        # Save only the bounding box area of the subplot
-        plt.draw()
-        ax.apply_aspect()  # Ensure equal aspect ratio
-
-        if filename_prefix:
-            filename = f"{filename_prefix}_boxplot_robustness_per_brier_bins.png"
-        else:
-            filename = "boxplot_robustness_per_brier_bins.png"
-
-        fig.savefig(save_path / filename, bbox_inches=new_extent)
     return ax
 
 
-def plot_accuracy_histogram_by_eqbins(
+def plot_histogram_by_eqbins(
     ax: Axes,
     data: pd.DataFrame,
     robustness_column_key: str,
     n_bins: int = 10,
     bins_strategy: str = "quantile",  # "quantile" or "equal_width"
-    save_path: ty.Optional[str | Path] = None,
-    filename_prefix: str = "",
+    metric_name: ty.Literal["Accuracy", "Brier"] = "Accuracy",
 ):
     """
-    Plots a horizontal bar histogram of accuracy by equal-width bins of robustness.
+    Plots a horizontal bar histogram of accuracy/brier-score by equal-width bins of robustness.
 
     Args:
         ax (Axes): Matplotlib Axes object to plot on.
@@ -354,11 +332,9 @@ def plot_accuracy_histogram_by_eqbins(
         robustness_column_key (str): Column name for robustness values.
         n_bins (int): Number of bins to create for robustness.
         bins_strategy (str): Strategy for binning ("quantile" or "equal_width").
-        save_path (str | Path, optional): If provided, saves the plot to this directory.
         filename_prefix (str): Prefix for the saved plot filename.
     """
     instances_robustness = data[robustness_column_key]
-
     if bins_strategy == "equal_width":
         quantiles = pd.cut(
             instances_robustness,
@@ -366,88 +342,68 @@ def plot_accuracy_histogram_by_eqbins(
             include_lowest=True,
         )
     elif bins_strategy == "quantile":
-        quantiles = pd.qcut(instances_robustness, q=n_bins)
+        quantiles = pd.qcut(
+            instances_robustness,
+            q=n_bins,
+            duplicates="drop",
+        )
     else:
         raise ValueError(
             f"Invalid mode '{bins_strategy}'. Use 'quantile' or 'equal_width'."
         )
 
-    accuracy = data.groupby(quantiles, observed=False)["Prediction_Correct"].mean()
-    counts = data.groupby(quantiles, observed=False).size()
+    if len(quantiles.cat.categories) < 2:
+        logger.warning(
+            f"Not enough unique robustness values to create {n_bins} quantile bins. Skipping plot."
+        )
+        return
 
-    bin_edges = [interval.left for interval in accuracy.index.categories] + [
-        accuracy.index.categories[-1].right
+    if metric_name == "Brier":
+        metric_values = data.groupby(quantiles, observed=False)["Brier_Score"].mean()
+        counts = data.groupby(quantiles, observed=False).size()
+    elif metric_name == "Accuracy":
+        metric_values = data.groupby(quantiles, observed=False)[
+            "Prediction_Correct"
+        ].mean()
+        counts = data.groupby(quantiles, observed=False).size()
+
+    bin_edges = [interval.left for interval in metric_values.index.categories] + [
+        metric_values.index.categories[-1].right
     ]
-    bin_midpoints = [interval.mid for interval in accuracy.index.categories]
+    bin_midpoints = [interval.mid for interval in metric_values.index.categories]
 
     ax.barh(
         bin_midpoints,
-        accuracy.values,
+        metric_values.values,
         height=np.diff(bin_edges),
         color="grey",
         edgecolor="black",
         alpha=0.7,
     )
 
-    for i, (acc, count, y_pos) in enumerate(
-        zip(accuracy.values, counts.values, bin_midpoints)
+    for i, (acc, _, y_pos) in enumerate(
+        zip(metric_values.values, counts.values, bin_midpoints)
     ):
         bar_height = np.diff(bin_edges)[i]
+        if metric_name == "Accuracy":
+            x_pos = acc - 0.1 if acc < 0.8 else acc - 0.1
+        elif metric_name == "Brier":
+            x_pos = acc - 0.1 if acc > 0.3 else acc + 0.1
         if bar_height > 0.03:
             ax.text(
-                acc - 0.1 if acc > 0.2 else acc + 0.1,  # x position
+                x_pos,
                 y_pos,
                 f"{acc:.2f}",
                 va="center",
                 ha="center",
                 fontsize=7,
-                # bbox=dict(
-                #     facecolor="white",
-                #     alpha=0.6,
-                #     edgecolor="none",
-                # ),
             )
 
-        ax.set_xlabel("Accuracy")
-        ax.set_xlim(0, 1.1)
+        ax.set_xlabel(metric_name)
+        ax.set_xlim(0, 1.0)
         ax.grid(True, alpha=0.3, linestyle=":")
 
     ax.tick_params(axis="y", labelleft=False)
-
-    if save_path:
-        save_path = Path(save_path)
-        logger.info(f"Saving accuracy histogram to {save_path}")
-        fig = ax.get_figure()
-        extent = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-
-        # Convert to coordinates
-        x0, y0, x1, y1 = extent.extents
-
-        # Set expansion (as a fraction of width/height)
-        expand_left = 0.05 * (x1 - x0)
-        expand_right = 0.45 * (x1 - x0)
-        expand_bottom = 0.10 * (y1 - y0)
-        expand_top = 0.10 * (y1 - y0)
-
-        # Create new expanded bbox
-        new_extent = Bbox.from_extents(
-            x0 - expand_left, y0 - expand_bottom, x1 + expand_right, y1 + expand_top
-        )
-
-        filename = save_path / "accuracy_histogram.png"
-        if filename.exists():
-            logger.warning(f"File {filename} already exists. Overwriting it.")
-            filename.unlink()
-
-        if filename_prefix:
-            filename = save_path / f"{filename_prefix}_accuracy_histogram.png"
-        else:
-            filename = save_path / "accuracy_histogram.png"
-
-        fig.savefig(
-            filename,
-            bbox_inches=new_extent,
-        )
     return ax
 
 
@@ -463,32 +419,19 @@ def plot_scatter_brier_vs_frl(
         ax_main (Axes): Matplotlib Axes object to plot on.
         robustness_column_key (str): Column name for robustness values.
     """
-    correct = data[data["Prediction_Correct"]]
-    incorrect = data[~data["Prediction_Correct"]]
 
-    if len(correct) > 0:
-        ax_main.scatter(
-            correct["Brier_Score"],
-            correct[robustness_column_key],
-            color="black",
-            alpha=0.05,
-            s=3,
-            label="Correct",
-        )
-
-    if len(incorrect) > 0:
-        ax_main.scatter(
-            incorrect["Brier_Score"],
-            incorrect[robustness_column_key],
-            color="black",
-            alpha=0.05,
-            s=3,
-            label="Incorrect",
-        )
+    ax_main.scatter(
+        data["Brier_Score"],
+        data[robustness_column_key],
+        color="black",
+        # alpha=0.05,
+        s=3,
+    )
 
     ax_main.set_xticks(np.linspace(0, 1, 11))
     ax_main.set_xticklabels([f"{x:.1f}" for x in np.linspace(0, 1, 11)], fontsize=10)
     ax_main.set_xlim(-0.05, 1.05)
+    ax_main.set_ylim(0, 1.05)
     ax_main.set_xlabel("Brier Score", fontsize=12)
     ax_main.set_ylabel("FRL", fontsize=12)
     ax_main.grid(True, alpha=0.3, axis="both")
@@ -504,12 +447,9 @@ def plot_brier_vs_robustness(
     figsize=(10, 8),
     drop_duplicates: bool = False,
     n_bins_brier: int = 10,
-    robustness_bins_strategy: ty.Literal[
-        "quantile", "equal_width"
-    ] = "quantile",  # "quantile" or "equal_width"
+    robustness_bins_strategy: ty.Literal["quantile", "equal_width"] = "quantile",
     n_bins_robustness: int = 10,
-    reference_diagonal_lines: bool = True,
-    show_top_subplot: bool = True,
+    metric_name: ty.Literal["Accuracy", "Brier"] = "Accuracy",
 ):
     """
     Brier vs PRL plot function.
@@ -524,14 +464,18 @@ def plot_brier_vs_robustness(
         n_bins_brier: Number of bins for Brier score (default=10).
         robustness_bins_strategy: Strategy for robustness bins ("quantile" or "equal_width").
         n_bins_robustness: Number of bins for robustness (default=10).
-        reference_diagonal_lines: Whether to add reference diagonal lines (default=True).
     """
-    if drop_duplicates:
-        filtered_analysis_data = fairness_analysis_data.drop_duplicates(
-            subset=["ID_row"]
+
+    if fairness_analysis_data is None or len(fairness_analysis_data) == 0:
+        logger.warning(
+            "No fairness analysis data provided or data is empty. Skipping plot."
         )
-    else:
-        filtered_analysis_data = fairness_analysis_data
+        return
+
+    filtered_analysis_data = fairness_analysis_data[
+        fairness_analysis_data["Man_Robustness_Individual"]
+        == fairness_analysis_data["Man_Robustness_Max"]
+    ]
 
     if (
         "Brier_Score" not in filtered_analysis_data.columns
@@ -548,59 +492,44 @@ def plot_brier_vs_robustness(
         return
 
     fig = plt.figure(figsize=figsize, facecolor="white")
-    if show_top_subplot:
-        gs = fig.add_gridspec(
-            2,
-            2,
-            width_ratios=[4, 1],
-            height_ratios=[1, 4],
-            left=0.1,
-            bottom=0.1,
-            right=0.9,
-            top=0.9,
-            wspace=0.02,
-            hspace=0.10,
-        )
 
-        ax_main = fig.add_subplot(gs[1, 0])
-        ax_hist_top = fig.add_subplot(gs[0, 0])
-        ax_hist_right = fig.add_subplot(gs[1, 1], sharey=ax_main)
-    else:
-        gs = fig.add_gridspec(
-            1,
-            2,
-            width_ratios=[4, 1],
-            height_ratios=[1],
-            left=0.1,
-            bottom=0.1,
-            right=0.9,
-            top=0.9,
-            wspace=0.02,
-        )
+    gs = fig.add_gridspec(
+        2,
+        2,
+        width_ratios=[4, 1],
+        height_ratios=[1, 4],
+        left=0.1,
+        bottom=0.1,
+        right=0.9,
+        top=0.9,
+        wspace=0.02,
+        hspace=0.10,
+    )
 
-        ax_main = fig.add_subplot(gs[0, 0])
-        ax_hist_top = None
-        ax_hist_right = fig.add_subplot(gs[0, 1], sharey=ax_main)
+    ax_main = fig.add_subplot(gs[1, 0])
+    ax_hist_top = fig.add_subplot(gs[0, 0])
+    ax_hist_right = fig.add_subplot(gs[1, 1], sharey=ax_main)
 
-    if show_top_subplot:
-        _ = plot_boxplot_robustness_per_brier_score_bins(
-            ax=ax_hist_top,
-            data=filtered_analysis_data,
-            robustness_column_key=robustness_column_key,
-            n_bins=n_bins_brier,
-            save_path=save_path,
-            filename_prefix=filename_prefix,
-        )
+    _ = plot_boxplot_robustness_per_brier_score_bins(
+        ax=ax_hist_top,
+        data=filtered_analysis_data,
+        robustness_column_key=robustness_column_key,
+        n_bins=n_bins_brier,
+    )
 
-    _ = plot_accuracy_histogram_by_eqbins(
+    _ = plot_histogram_by_eqbins(
         ax=ax_hist_right,
         data=filtered_analysis_data,
         bins_strategy=robustness_bins_strategy,
         n_bins=n_bins_robustness,
         robustness_column_key=robustness_column_key,
-        save_path=save_path,
-        filename_prefix=filename_prefix,
+        metric_name=metric_name,
     )
+
+    if drop_duplicates:
+        filtered_analysis_data = fairness_analysis_data.reset_index().drop_duplicates(
+            subset=["ID_row"]
+        )
 
     _ = plot_scatter_brier_vs_frl(
         data=filtered_analysis_data,
@@ -608,42 +537,102 @@ def plot_brier_vs_robustness(
         robustness_column_key=robustness_column_key,
     )
 
-    if reference_diagonal_lines:
-        _ = plot_reference_lines(ax_main, color="gray")
-
-    # """Adds a text box with counts of correct and incorrect predictions"""
-    # correct = filtered_analysis_data[filtered_analysis_data["Prediction_Correct"]]
-    # incorrect = filtered_analysis_data[~filtered_analysis_data["Prediction_Correct"]]
-    # total_correct = len(correct)
-    # total_incorrect = len(incorrect)
-    # total_instances = total_correct + total_incorrect
-
-    # count_text = f"Total: {total_instances}\nCorrect: {total_correct}\nIncorrect: {total_incorrect}"
-
-    # fig.text(
-    #     0.845,
-    #     0.80,
-    #     count_text,
-    #     fontsize=10,
-    #     verticalalignment="top",
-    #     horizontalalignment="right",
-    #     bbox=dict(
-    #         boxstyle="round,pad=0.5", facecolor="white", alpha=0.8, edgecolor="gray"
-    #     ),
-    #     zorder=10,
-    # )
-
     if save_path is not None:
         save_path = Path(save_path)
 
         filename = (
-            "brier_vs_robustness.png"
+            "brier_vs_robustness"
             if not filename_prefix
-            else f"{filename_prefix}_brier_vs_robustness.png"
+            else f"{filename_prefix}_{metric_name}_brier_vs_robustness"
         )
-        logger.info(f"Saving plot to {save_path / filename}")
 
-        plt.savefig(save_path / filename)
+        plt.savefig(
+            (save_path / filename).with_suffix(".pdf"),
+            format="pdf",
+            dpi=1200,
+        )
         logger.success(f"Plot saved to {save_path / filename}")
+
+    return fig
+
+
+def plot_stacked_histograms_brier_accuracy(
+    name: str,
+    data: pd.DataFrame,
+    robustness_column_key: str,
+    n_bins: int = 10,
+    save_path: ty.Optional[Path] = None,
+):
+    # data = data[data[robustness_column_key] == data["Man_Robustness_Individual"]]
+    if len(data) == 0:
+        logger.warning("No data provided or data is empty.")
+        return
+
+    quantiles = pd.qcut(
+        data[robustness_column_key],
+        q=n_bins,
+        duplicates="drop",
+    )
+
+    if len(quantiles.cat.categories) < 2:
+        logger.warning(
+            f"Not enough unique robustness values to create {n_bins} quantile bins. Skipping plot."
+        )
+        return
+
+    brier_scores = data.groupby(quantiles)["Brier_Score"].mean()
+    brier_scores.index = [f"Q{i + 1}" for i in range(len(brier_scores))]
+    accuracy_scores = data.groupby(quantiles).apply(
+        lambda x: accuracy_score(x["target_value"].values, x["Predicted_Value"].values)
+    )
+    accuracy_scores.index = [f"Q{i + 1}" for i in range(len(accuracy_scores))]
+
+    bin_edges = [interval.left for interval in quantiles.cat.categories] + [
+        quantiles.cat.categories[-1].right
+    ]
+    bin_midpoints = [interval.mid for interval in quantiles.cat.categories]
+
+    fig, ax = plt.subplots(2, 1, figsize=(8, 4), sharex=True)
+    ax[0].bar(
+        bin_midpoints,
+        brier_scores,
+        width=np.diff(bin_edges),
+        align="center",
+        color="grey",
+        alpha=0.9,
+        edgecolor="black",
+        linewidth=0.8,
+    )
+    ax[0].set_ylabel("Brier Loss")
+    ax[0].set_ylim(0, 1)
+    ax[0].grid(axis="y")
+    ax[0].set_yticks(np.linspace(0, 1, 11))
+    ax[0].set_xlim(0, 1)
+
+    ax[1].bar(
+        bin_midpoints,
+        accuracy_scores,
+        width=np.diff(bin_edges),
+        align="center",
+        color="grey",
+        alpha=0.9,
+        edgecolor="black",
+        linewidth=0.8,
+    )
+    ax[1].set_ylabel("Accuracy")
+    ax[1].set_ylim(0, 1)  # Accuracy ranges from 0
+    ax[1].grid(axis="y")
+    ax[1].set_yticks(np.linspace(0, 1, 11))
+    ax[1].set_xlabel("FRL")
+    ax[0].set_xlim(0, 1)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(
+            save_path / f"{name}_brier_accuracy_vs_robustness.pdf",
+            format="pdf",
+            dpi=600,
+        )
 
     return fig

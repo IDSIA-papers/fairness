@@ -76,16 +76,26 @@ The installation is straightforward and can be done using either `uv` (recommend
 
 ### Quick Start
 
+You can find some handy examples in the `notebooks/` directory, which demonstrate how to use the main functionalities of the codebase. More or less, the pipeline script (`pipeline.py` and `pipeline_cv.py`) automates all the steps shown in the notebooks.
+
 Run the main fairness analysis pipeline:
 
 ```bash
 python pipeline.py
 ```
 
-or if UV is installed:
+Run the main fairness analysis pipeline using cross-validation (10 folds by default):
+
+```bash
+python pipeline_cv.py
+```
+
+or if `uv` is installed:
 
 ```bash
 uv run pipeline.py
+// or
+uv run pipeline_cv.py
 ```
 
 ### Advanced Usage
@@ -135,6 +145,8 @@ Main dependencies (see [`pyproject.toml`](pyproject.toml) for complete list):
 - `matplotlib`: Visualization
 - `pyAgrum`: Bayesian networks
 - `scikit-learn`: Machine learning utilities
+- `tqdm`: Progress bars
+- `seaborn`: Statistical data visualization
 
 ## License
 
@@ -146,4 +158,4 @@ For questions about the implementation or paper:
 
 - Alessandro Antonucci - [alessandro.antonucci@idsia.ch](mailto:)
 - Eric Rossetto - [eric.rossetto@idsia.ch](mailto:)
-- Ivan Duvniak
+- Ivan Duvniak - [ivan.duvnjak@supsi.ch](mailto:)

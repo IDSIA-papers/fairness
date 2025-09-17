@@ -12,6 +12,7 @@ def visualize_bn(
     learning_method: str,
     save_path: ty.Optional[str] = None,
     simple: ty.Optional[str] = None,
+    show_graph: bool = True
 ):
     """
     Visualize the Bayesian network
@@ -44,7 +45,8 @@ def visualize_bn(
             colors[node_name] = 0.7
 
     # Show the Bayesian network with custom node colors
-    gnb.showBN(bn, nodeColor=colors)
+    if show_graph:
+        gnb.showBN(bn, nodeColor=colors)
 
     # save as png image
     # if True:

@@ -1,8 +1,11 @@
 import heapq
 import os
+import re
 import time
 import typing as ty
+from hmac import new
 from itertools import product
+from math import log, nan
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +20,7 @@ from bayesian.inference import (
     build_inference_engine,
     select_optimal_sensitive_feature_perturbation,
 )
+from bayesian.modifiers import extract_markov_blanket, filter_relevant_features
 from datasets.data import extract_features, extract_row_data
 from metrics.evaluate import compute_brier_scores
 from mrf.inference.VE import (
@@ -240,12 +244,13 @@ def compute_group_fairness_metrics(
 
 def compute_individual_fairness(
     name: str,
-    df: ty.Optional[pd.DataFrame] = None,
-    markov_blanket: ty.Optional[gum.BayesNet] = None,
-    target: ty.Optional[str] = None,
-    sensitive_cols: ty.Optional[ty.Iterable[str]] = None,
-    sensitive_columns_val: ty.Optional[dict[str, ty.Any]] = None,
-    learning_method: ty.Optional[str] = None,
+    df: pd.DataFrame,
+    markov_blanket: gum.BayesNet,
+    target: str,
+    sensitive_features: list[str],
+    public_features: list[str],
+    sensitive_column_values: dict[str, ty.Any],
+    learning_method: str = "",
     save_path: ty.Optional[str] = None,
     drop_duplicates: bool = True,
 ) -> pd.DataFrame:
@@ -260,8 +265,9 @@ def compute_individual_fairness(
         df: DataFrame containing the dataset
         markov_blanket: Bayesian network
         target: Target variable
-        sensitive_cols: List of sensitive columns
-        sensitive_columns_val: Dictionary mapping sensitive columns to their possible values
+        sensitive_features: List of sensitive columns
+        public_features: List of public (non-sensitive) columns
+        sensitive_column_values: Dictionary mapping sensitive columns to their possible values
         learning_method: Learning method used to learn the Bayesian network
         save_path: Path to save results. If None, results are not saved.
         drop_duplicates: Whether to drop duplicate rows in the DataFrame
@@ -293,22 +299,6 @@ def compute_individual_fairness(
     logger.info(f"Computing individual fairness for {name}...")
     results = []
 
-    if not (
-        df is not None
-        and markov_blanket is not None
-        and target is not None
-        and sensitive_cols is not None
-        and sensitive_columns_val is not None
-        and learning_method is not None
-    ):
-        raise ValueError(
-            "If no saved file is found, all parameters must be provided to compute individual fairness."
-        )
-
-    if not sensitive_cols:
-        logger.info(f"No sensitive columns in {name}, skipping")
-        return pd.DataFrame()
-
     ie = build_inference_engine(markov_blanket)
 
     df_new = df.copy()
@@ -316,7 +306,7 @@ def compute_individual_fairness(
         list(markov_blanket.names())
         + [
             "Brier_Score",
-            "Predicted",
+            "Predicted_Class",
         ]
     ]
     if drop_duplicates:
@@ -328,48 +318,108 @@ def compute_individual_fairness(
             f"Duplicate rows dropped from {len(df)} to {len(df_new)}, # dropped: {len(df) - len(df_new)}"
         )
 
+    # Handle the case where there are no sensitive attributes
+    if not sensitive_features or len(sensitive_features) == 0:
+        logger.info(
+            f"No sensitive attributes in {name}, returning trivial fairness metrics."
+        )
+        trivial_results = []
+        for row_id, row_data in tqdm.tqdm(df.iterrows(), total=len(df)):
+            original_values = {}
+            for column in public_features:
+                original_values[column] = str(row_data[column])
+
+            original_states = []
+            for i, attr in enumerate(sensitive_column_values.keys()):
+                logger.debug(f"Sensitive attribute {i}: {attr}")
+                original_value = str(row_data[attr])
+                original_states.append(original_value)
+
+            true_value = str(row_data[target])
+
+            # Compute posterior just once for the row
+            evidence = {
+                col: str(row_data[col])
+                for col in markov_blanket.names()
+                if col != target
+            }
+            try:
+                ie.setEvidence(evidence)
+                ie.makeInference()
+                posterior = ie.posterior(target).toarray()
+            except gum.InvalidArgument:
+                ie.eraseAllEvidence()
+                ie.makeInference()
+                posterior = ie.posterior(target).toarray()
+            ie.eraseAllEvidence()
+
+            pred_label = markov_blanket.variable(target).labels()[np.argmax(posterior)]
+
+            result = {
+                "Dataset": name,
+                "Target": target,
+                "target_value": true_value,
+                "ID_row": row_id,
+                "Modified_Attributes": "",
+                "Original_States": "",
+                "Modified_States": "",
+                "Posterior_Original": posterior,
+                "Posterior_Modified": posterior,
+                "KL_Robustness_Individual": 0.0,
+                "Man_Robustness_Individual": 0.0,
+                "Predicted_Value": pred_label,
+                "Prediction_Correct": int(pred_label == true_value),
+                "Brier_Score": compute_brier_scores(
+                    markov_blanket,
+                    target,
+                    pd.Series([posterior]),
+                    pd.Series([true_value]),
+                ).values[0],
+                "Man_Robustness_Max": 0.0,
+                "KL_Robustness_Max": 0.0,
+                "Row_Processing_Time": nan,
+            }
+
+            # Add all original column values to the result
+            for col, val in original_values.items():
+                result[f"Original_{col}"] = val
+            trivial_results.append(result)
+
+        results_df = pd.DataFrame(trivial_results)
+        if save_path:
+            results_df.to_csv(
+                f"{save_path}/{name}_{learning_method}_individual_fairness.csv",
+                index=False,
+            )
+        return results_df
+
     # Process each row in the dataset
     for row_id, row_data in tqdm.tqdm(
         df_new.iterrows(), desc="Processing rows", total=len(df_new)
     ):
         # Extract precomputed values from the dataset
-        brier_score = row_data.get("Brier_Score", None)
-        predicted_value = row_data.get("Predicted", None)
         true_value = str(row_data[target])
-        match_flag = (
-            predicted_value == true_value
-            if type(predicted_value) == type(true_value)
-            else -1
-        )
 
         row_start_time = time.time()
 
         original_values = {}
-        for column in df_new.columns:
-            if column != target and column not in [
-                "Brier_Score",
-                "Predicted",
-            ]:
-                original_values[column] = str(row_data[column])
+        for column in public_features:
+            original_values[column] = str(row_data[column])
 
         # Get posterior probability by setting as evidence the entire row
+        ie.eraseAllEvidence()
         ie.setEvidence(original_values)
         ie.makeInference()
         posterior_original = ie.posterior(
             target
         ).toarray()  # P(T|X) X=values of that row, sensible + non sensible
-        ie.eraseAllEvidence()
 
         # Store all posteriors for this row to compute robustness
         all_posteriors = [posterior_original]
 
-        sensitive_feat_to_states = {
-            feat: list(df[feat].unique()) for feat in sensitive_cols
-        }
-
         man_dists = []
         kl_dists = []
-        for states_pair in product(*sensitive_feat_to_states.values()):
+        for states_pair in product(*sensitive_column_values.values()):
             # Create a new row with the alternative values
             modified_row_data = original_values.copy()
 
@@ -378,7 +428,7 @@ def compute_individual_fairness(
             original_states = []
             modified_states = []
 
-            for i, attr in enumerate(sensitive_feat_to_states.keys()):
+            for i, attr in enumerate(sensitive_column_values.keys()):
                 original_value = str(row_data[attr])
                 new_value = str(states_pair[i])
 
@@ -397,17 +447,21 @@ def compute_individual_fairness(
             posterior_modified = ie.posterior(target).toarray()
             all_posteriors.append(posterior_modified)
 
+            perturbed_predicted_value = markov_blanket.variable(target).labels()[
+                np.argmax(posterior_modified)
+            ]
+
             # Calculate KL divergence between original and modified posteriors
             manhattan_distance = (
                 manhattan_distances(
-                    np.array([posterior_original]), np.array([posterior_modified])
+                    np.array([posterior_original]),
+                    np.array([posterior_modified]),
                 ).item()
                 / 2
             )  # Divide by 2 to normalize the distance
             man_dists.append(manhattan_distance)
             kl_div_value = kl_div(posterior_original, posterior_modified).sum()
             kl_dists.append(kl_div_value)
-            ie.eraseAllEvidence()
 
             # Create result entry
             result = {
@@ -422,23 +476,26 @@ def compute_individual_fairness(
                 "Posterior_Modified": posterior_modified,
                 "KL_Robustness_Individual": kl_div_value,
                 "Man_Robustness_Individual": manhattan_distance,
-                "Predicted_Value": predicted_value,
-                "Prediction_Correct": match_flag,
+                "Predicted_Value": perturbed_predicted_value,
+                "Prediction_Correct": int(perturbed_predicted_value == true_value),
+                "Brier_Score": compute_brier_scores(
+                    markov_blanket,
+                    target,
+                    pd.Series([posterior_modified]),
+                    pd.Series([true_value]),
+                ).values[0],
             }
-
-            # Add Brier score if available
-            if brier_score is not None:
-                result["Brier_Score"] = brier_score
 
             # Add all original column values to the result
             for col, val in original_values.items():
                 result[f"Original_{col}"] = val
 
             # Add modified values to the result
-            for i, attr in enumerate(sensitive_feat_to_states.keys()):
+            for i, attr in enumerate(sensitive_column_values.keys()):
                 result[f"Modified_{attr}"] = states_pair[i]
 
             results.append(result)
+            ie.eraseAllEvidence()
 
         # Robustness as the maximum manhattan distance observed
         row_end_time = time.time() - row_start_time
@@ -450,6 +507,7 @@ def compute_individual_fairness(
             if result["ID_row"] == row_id:
                 result["Man_Robustness_Max"] = max_manhattan
                 result["KL_Robustness_Max"] = max_kl
+                result["Row_Processing_Time"] = row_end_time
                 result["Man_Robustness_Individual"] = result[
                     "Man_Robustness_Individual"
                 ]
@@ -459,16 +517,6 @@ def compute_individual_fairness(
 
     results_df = pd.DataFrame(results)
 
-    # # Add robustness metrics to the DataFrame
-    # if row_robustness:
-    #     robustness_df = pd.DataFrame.from_dict(
-    #         row_robustness, orient="index"
-    #     ).reset_index()
-    #     robustness_df.rename(columns={"index": "ID_row"}, inplace=True)
-
-    #     # Merge robustness data with the results DataFrame
-    #     results_df = pd.merge(results_df, robustness_df, on="ID_row", how="left")
-
     if save_path:
         logger.info(f"Saving results to {save_path}")
         results_df.to_csv(
@@ -477,6 +525,166 @@ def compute_individual_fairness(
         )
 
     return results_df
+
+
+def compute_individual_fairness_cv(
+    kfold_results: dict,
+    name: str,
+    target: str,
+    learning_method: str,
+    performance_results: dict,
+    save_path_output_dataset: Path = None,
+    drop_duplicates: bool = True,
+) -> pd.DataFrame:
+    if save_path_output_dataset:
+        # Try to load existing results first
+        result_file = (
+            save_path_output_dataset / f"{name}_individual_fairness_all_folds.csv"
+        )
+
+        if result_file.exists():
+            logger.info(f"Loading existing results from {result_file}")
+            individual_fairness_all_folds_df = pd.read_csv(result_file)
+
+            if len(individual_fairness_all_folds_df) == 0:
+                logger.warning("Loaded individual fairness results are empty.")
+                return individual_fairness_all_folds_df
+
+            def parse_posterior(val: str) -> np.typing.NDArray[np.float64]:
+                return np.fromstring(val.strip("[]"), sep=" ")
+
+            individual_fairness_all_folds_df["Posterior_Original"] = (
+                individual_fairness_all_folds_df["Posterior_Original"].apply(
+                    parse_posterior
+                )
+            )
+            individual_fairness_all_folds_df["Posterior_Modified"] = (
+                individual_fairness_all_folds_df["Posterior_Modified"].apply(
+                    parse_posterior
+                )
+            )
+            return individual_fairness_all_folds_df
+
+    logger.info(f"Computing individual fairness for {name} across all folds...")
+    individual_fairness_all_folds = []
+    for fold, results in kfold_results.items():
+        logger.info(f"Analyzing individual fairness for fold {fold + 1}")
+        markov_blanket = extract_markov_blanket(results["bn"], target)
+
+        target, sensible_features, public_features = extract_features(
+            results["val_df_metrics"]
+        )
+        new_sensible_features = filter_relevant_features(
+            markov_blanket, sensible_features
+        )
+        new_public_features = filter_relevant_features(markov_blanket, public_features)
+        new_sensible_states = {
+            feat: list(results["val_df_metrics"][feat].dropna().unique().astype(str))
+            for feat in new_sensible_features
+        }
+
+        logger.info(
+            f"Sensitive features considered for individual fairness in fold {fold + 1}: {new_sensible_features}"
+        )
+        logger.info(
+            f"Public features considered for individual fairness in fold {fold + 1}: {new_public_features}"
+        )
+        logger.info(
+            f"Sensitive feature states considered for individual fairness in fold {fold + 1}: {new_sensible_states}"
+        )
+
+        individual_fairness = compute_individual_fairness(
+            name,
+            results["val_df_metrics"],
+            markov_blanket,
+            target,
+            sensitive_features=new_sensible_features,
+            public_features=new_public_features,
+            sensitive_column_values=new_sensible_states,
+            learning_method=learning_method,
+            drop_duplicates=drop_duplicates,
+        )
+
+        # Add a fold column identifier
+        individual_fairness["Fold"] = fold + 1
+
+        individual_fairness_all_folds.append(individual_fairness)
+
+    if len(individual_fairness_all_folds) == 0:
+        logger.warning("No individual fairness data computed for any fold.")
+        return pd.DataFrame()
+    else:
+        individual_fairness_all_folds_df = pd.concat(individual_fairness_all_folds)
+
+    if save_path_output_dataset:
+        individual_fairness_all_folds_df.to_csv(
+            save_path_output_dataset / f"{name}_individual_fairness_all_folds.csv",
+        )
+
+    return individual_fairness_all_folds_df
+
+
+def compute_individual_fairness_MRF_cv(
+    kfold_results: dict,
+    individual_fairness_all_folds_df: pd.DataFrame,
+    name: str,
+    target: str,
+    save_path_output_dataset: Path = None,
+):
+    if (
+        individual_fairness_all_folds_df is None
+        or len(individual_fairness_all_folds_df) == 0
+    ):
+        logger.warning(
+            "No individual fairness data provided or data is empty. Skipping MRF analysis."
+        )
+        return pd.DataFrame()
+    if save_path_output_dataset:
+        # Try to load existing results first
+        result_file = (
+            save_path_output_dataset / f"{name}_individual_fairness_MRF_all_folds.csv"
+        )
+
+        if result_file.exists():
+            logger.info(f"Loading existing results from {result_file}")
+            individual_fairness_MRF_all_folds_df = pd.read_csv(result_file)
+
+            def parse_posterior(val: str) -> np.typing.NDArray[np.float64]:
+                return np.fromstring(val.strip("[]"), sep=" ")
+
+            individual_fairness_MRF_all_folds_df["Posterior_MAX"] = (
+                individual_fairness_MRF_all_folds_df["Posterior_MAX"]
+                .fillna("[]")
+                .apply(parse_posterior)
+            )
+            individual_fairness_MRF_all_folds_df["Posterior_MIN"] = (
+                individual_fairness_MRF_all_folds_df["Posterior_MIN"]
+                .fillna("[]")
+                .apply(parse_posterior)
+            )
+            return individual_fairness_MRF_all_folds_df
+
+    individual_fairness_MRF_all_folds = []
+    for fold, results in kfold_results.items():
+        print(f"Analyzing individual fairness MRF for fold {fold + 1}")
+        markov_blanket = extract_markov_blanket(results["bn"], target)
+        individual_fairness_fold = individual_fairness_all_folds_df[
+            individual_fairness_all_folds_df["Fold"] == (fold + 1)
+        ]
+        individual_fairness_MRF = compute_individual_fairness_MRF(
+            markov_blanket, results["val_df_metrics"], individual_fairness_fold
+        )
+
+        individual_fairness_MRF["Fold"] = fold + 1
+        individual_fairness_MRF_all_folds.append(individual_fairness_MRF)
+
+    individual_fairness_MRF_all_folds_df = pd.concat(individual_fairness_MRF_all_folds)
+    if save_path_output_dataset:
+        individual_fairness_MRF_all_folds_df.to_csv(
+            save_path_output_dataset / f"{name}_individual_fairness_MRF_all_folds.csv",
+        )
+
+    return individual_fairness_MRF_all_folds_df
 
 
 def analyze_individual_fairness_metrics(
@@ -755,13 +963,6 @@ def compute_individual_fairness_MRF(
             def parse_posterior(val: str) -> np.typing.NDArray[np.float64]:
                 return np.fromstring(val.strip("[]"), sep=" ")
 
-            read_df["Posterior_Original"] = read_df["Posterior_Original"].apply(
-                parse_posterior
-            )
-            read_df["Posterior_Modified"] = read_df["Posterior_Modified"].apply(
-                parse_posterior
-            )
-
             read_df["Posterior_MAX"] = read_df["Posterior_MAX"].apply(parse_posterior)
             read_df["Posterior_MIN"] = read_df["Posterior_MIN"].apply(parse_posterior)
             read_df["Posterior_Star"] = read_df["Posterior_Star"].apply(parse_posterior)
@@ -791,8 +992,69 @@ def compute_individual_fairness_MRF(
 
     ie_markov_blanket = build_inference_engine(markov_blanket)
 
+    if len(sensible_features) == 0:
+        logger.info(
+            "No sensitive attributes in the BN/Markov blanket, returning trivial MRF fairness metrics."
+        )
+        trivial_results = []
+        for row_id, row_data in tqdm.tqdm(test_df.iterrows(), total=len(test_df)):
+            # compute posterior once
+            evidence = {
+                col: str(row_data[col])
+                for col in markov_blanket.names()
+                if col != target
+            }
+
+            try:
+                ie_markov_blanket.setEvidence(evidence)
+                ie_markov_blanket.makeInference()
+                posterior = ie_markov_blanket.posterior(target).toarray()
+            except gum.InvalidArgument:
+                ie_markov_blanket.eraseAllEvidence()
+                ie_markov_blanket.makeInference()
+                posterior = ie_markov_blanket.posterior(target).toarray()
+            ie_markov_blanket.eraseAllEvidence()
+
+            pred_label = markov_blanket.variable(target).labels()[np.argmax(posterior)]
+            true_value = str(row_data[target])
+
+            result = {
+                "ID_row": row_id,
+                "Target": true_value,
+                "MRF_assignment_MAX": {},
+                "MRF_assignment_MIN": {},
+                "MRF_Star_Assignment": {},
+                "BN_Star_Assignment": {},
+                "Posterior_Original": posterior,
+                "Posterior_Modified": posterior,
+                "Posterior_MAX": posterior,
+                "Posterior_MIN": posterior,
+                "Posterior_Star": posterior,
+                "Man_Robustness_Star": 0.0,
+                "KL_Divergence_Star": 0.0,
+                "Match_assignments": True,
+                "Match_Posteriors": True,
+                "Brier_Score": compute_brier_scores(
+                    markov_blanket,
+                    target,
+                    pd.Series([posterior]),
+                    pd.Series([true_value]),
+                ).values[0],
+                "Prediction_Correct": int(pred_label == true_value),
+                "Time_row": 0.0,
+            }
+            trivial_results.append(result)
+
+        mrf_inference_df = pd.DataFrame(trivial_results)
+        if save_path:
+            mrf_inference_df.to_csv(
+                save_path / "mrf_inference_results.csv", index=False, sep=";"
+            )
+        return mrf_inference_df
+
     # We will use the row IDs to reference the dataset rows
     row_ids = individual_fairness_df["ID_row"].unique()
+
     mrf_inference_records = []
     for id in tqdm.tqdm(row_ids, total=len(row_ids), desc="MRF Inference"):
         row_start_time = time.time()
@@ -813,10 +1075,10 @@ def compute_individual_fairness_MRF(
 
         mrf_inference_record["Target"] = individual_fairness_row["target_value"].iloc[0]
         mrf_inference_record["BN_Star_Assignment"] = bn_star_assignment
-        mrf_inference_record["Posterior_Original"] = individual_fairness_row[
+        mrf_inference_record["BN_Posterior_Original"] = individual_fairness_row[
             "Posterior_Original"
         ].iloc[0]
-        mrf_inference_record["Posterior_Modified"] = individual_fairness_row[
+        mrf_inference_record["BN_Posterior_Modified"] = individual_fairness_row[
             "Posterior_Modified"
         ].iloc[0]
 
@@ -893,11 +1155,24 @@ def compute_individual_fairness_MRF(
         )
         mrf_inference_record["Posterior_Star"] = posterior_star
         mrf_inference_record["Man_Robustness_Star"] = manhattan_distance
-        mrf_inference_record["KL_Divergenge_Star"] = kl_divergence
+        mrf_inference_record["KL_Divergence_Star"] = kl_divergence
 
         mrf_inference_record["Match_assignments"] = (
             mrf_inference_record["BN_Star_Assignment"]
             == mrf_inference_record["MRF_Star_Assignment"]
+        )
+
+        mrf_inference_record["Prediction_Correct"] = (
+            markov_blanket.variable(target).labels()[(np.argmax(posterior_star))]
+            == mrf_inference_record["Target"]
+        )
+
+        mrf_inference_record["Match_Posteriors"] = (
+            np.allclose(
+                individual_fairness_row["Posterior_Modified"].iloc[0],
+                posterior_star,
+                atol=1e-9,
+            ),
         )
 
         mrf_inference_record["Time_row"] = time.time() - row_start_time
@@ -905,19 +1180,12 @@ def compute_individual_fairness_MRF(
 
     mrf_inference_df = pd.DataFrame(mrf_inference_records)
 
-    mrf_inference_df["Brier_Score"] = compute_brier_scores(
-        markov_blanket,
-        target,
-        mrf_inference_df["Posterior_Star"],
-        mrf_inference_df["Target"],
-    )
-
-    mrf_inference_df["Prediction_Correct"] = (
-        mrf_inference_df["Posterior_Star"].apply(
-            lambda x: markov_blanket.variable(target).labels()[(np.argmax(x))]
-        )
-        == mrf_inference_df["Target"]
-    )
+    # mrf_inference_df["Prediction_Correct"] = (
+    #     mrf_inference_df["Posterior_Star"].apply(
+    #         lambda x: markov_blanket.variable(target).labels()[(np.argmax(x))]
+    #     )
+    #     == mrf_inference_df["Target"]
+    # )
     if save_path:
         logger.info(f"Saving MRF inference results to {save_path}")
         save_path = Path(save_path)
@@ -926,8 +1194,5 @@ def compute_individual_fairness_MRF(
             index=False,
             sep=";",
         )
-    logger.success(
-        f"MRF inference completed in {mrf_inference_df['Time_row'].sum():.2f} seconds"
-    )
 
     return mrf_inference_df

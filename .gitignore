@@ -42,6 +42,7 @@ build/
 
 notebooks/
 
+data/notebook_results/
 data/old_data/
 data/output/
 data/output_non_forced/
