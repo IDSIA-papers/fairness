@@ -40,7 +40,7 @@ build/
 *.sln
 *.sw?
 
-# notebooks/
+notebooks/
 
 data/notebook_results/
 data/old_data/
