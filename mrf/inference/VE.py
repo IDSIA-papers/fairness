@@ -191,6 +191,7 @@ class VariableElimination:
         Perform MAP inference on the MRF.
 
         It computes the most likely assignment to ALL of the non-evidence variables; then
+        it returns the assignment and the corresponding probability.
 
         Args:
             evidence (dict[int | str, tp.Any], optional): The observed evidence in the MRF.

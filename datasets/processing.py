@@ -3,9 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 from loguru import logger
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import KBinsDiscretizer
-from sklearn.model_selection import StratifiedKFold
 
 
 def detect_column_types(
@@ -117,10 +116,7 @@ def make_columns_categorical(
 
 
 def split_dataset(
-    df: pd.DataFrame, 
-    target_column: str, 
-    test_size: float = 0.5, 
-    random_state: int = 42
+    df: pd.DataFrame, target_column: str, test_size: float = 0.5, random_state: int = 42
 ) -> ty.Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Splits a dataset into training and testing sets with stratification on the target variable. Ensures that
@@ -203,13 +199,20 @@ def compute_time_ratios(
     Returns:
         pd.Series: A series containing the ratio of processing times for each row.
     """
-    individual_fairness_bn = individual_fairness_bn.dropna(subset=["ID_row"])
-    individual_fairness_mrf = individual_fairness_mrf.dropna()
+    if len(individual_fairness_bn) == 0 or len(individual_fairness_mrf) == 0:
+        logger.warning(
+            "One of the input dataframes is empty. Returning empty dataframe."
+        )
+        return pd.DataFrame()
+
+    individual_fairness_bn = individual_fairness_bn.dropna(
+        subset=["ID_row", "Row_Processing_Time"]
+    )
 
     joined_df = individual_fairness_bn.merge(
-    individual_fairness_mrf,
-    on="ID_row",
-    how="right",
+        individual_fairness_mrf,
+        on="ID_row",
+        how="right",
     )
     joined_df = (
         joined_df[["Time_row", "Row_Processing_Time"]].drop_duplicates().dropna()
@@ -235,6 +238,7 @@ def stratified_kfold_split(
     n_splits: int = 5,
     shuffle: bool = True,
     random_state: int = 42,
+    keep_original_indexes: bool = False,
 ) -> ty.Generator[ty.Tuple[pd.DataFrame, pd.DataFrame], None, None]:
     """
     Splits a dataset into stratified K-Folds, ensuring all unique values for every column
@@ -246,6 +250,7 @@ def stratified_kfold_split(
         n_splits (int): Number of folds. Must be at least 2.
         shuffle (bool): Whether to shuffle each class's samples before splitting.
         random_state (int): Random seed for shuffling.
+        keep_original_indexes (bool): Whether to keep the original indexes in the output dataframes.
 
     Yields:
         Tuple[pd.DataFrame, pd.DataFrame]: The training and testing datasets for each fold.
@@ -273,7 +278,8 @@ def stratified_kfold_split(
             train_df = pd.concat([train_df, df.loc[list(missing_required)]])
             test_df = test_df.drop(index=missing_required, errors="ignore")
 
-        train_df = train_df.reset_index(drop=True)
-        test_df = test_df.reset_index(drop=True)
+        if not keep_original_indexes:
+            train_df = train_df.reset_index(drop=True)
+            test_df = test_df.reset_index(drop=True)
 
         yield train_df, test_df

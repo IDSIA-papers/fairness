@@ -6,7 +6,7 @@ from loguru import logger
 
 
 def extract_markov_blanket(
-    bn: gum.BayesNet, target: str, save_path: ty.Optional[str | Path]
+    bn: gum.BayesNet, target: str, save_path: ty.Optional[str | Path] = None
 ) -> gum.BayesNet:
     """
     Get the Markov blanket of a target variable in a Bayesian network, if a node in the Markov blanket
@@ -110,7 +110,6 @@ def simplification_1(
         simplified_bn.erase(node)
 
     if save_path:
-        logger.info(f"Saving simplified network to {save_path} ...")
         gum.saveBN(simplified_bn, (Path(save_path) / f"{name_prefix}.pkl").as_posix())
         logger.success(f"Saved simplified network to {save_path} as {name_prefix}.pkl")
 
@@ -198,20 +197,50 @@ def add_sensible_to_target_arcs(
     # Make a copy to avoid modifying the original
     params = learning_params.copy() if learning_params else {}
 
-    # Initialize the must_have_arcs list if it doesn't exist
-    if "must_have_arcs" not in params:
-        params["must_have_arcs"] = []
-
     # Add arcs between sensible features and target
     for feature in sensible_features:
-        arc = (feature, target)
+        arc = (target, feature)
 
+        params["must_have_arcs"] = params.get("must_have_arcs", [])
         # Add the arc if it's not already in the list
         if arc not in params["must_have_arcs"]:
             params["must_have_arcs"].append(arc)
 
     logger.debug(
         f"Added {len(sensible_features)} mandatory arcs between sensible features and target"
+    )
+    return params
+
+
+def add_public_to_target_arcs(
+    learning_params: dict, public_features: list[str], target: str
+) -> dict[str, list[tuple[str, str]]]:
+    """
+    Add arcs from public features to the target variable in the learning parameters.
+
+    Parameters:
+        learning_params: Dictionary of learning parameters for Bayesian network learning
+        public_features: List of public features
+        target: Target variable names
+
+    Returns:
+        Updated learning parameters with mandatory arcs added
+    """
+
+    # Make a copy to avoid modifying the original
+    params = learning_params.copy() if learning_params else {}
+
+    # Add arcs between public features and target
+    for feature in public_features:
+        arc = (target, feature)
+
+        params["must_have_arcs"] = params.get("must_have_arcs", [])
+        # Add the arc if it's not already in the list
+        if arc not in params["must_have_arcs"]:
+            params["must_have_arcs"].append(arc)
+
+    logger.debug(
+        f"Added {len(public_features)} mandatory arcs between public features and target"
     )
     return params
 
