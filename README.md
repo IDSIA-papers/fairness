@@ -98,6 +98,12 @@ uv run pipeline.py
 uv run pipeline_cv.py
 ```
 
+Note that by the default the pipeline will launch experiments in the `non-forced` mode, meaning that we "naturally" learn the Bayesian without forcing any private and public node to be children of the target node. If you want to run the `forced` mode, where we force all private and public nodes to be children of the target node, you can launch the pipeline with the `--force` flag:
+
+```bash
+python pipeline_cv.py --force
+```
+
 ### Advanced Usage
 
 The main script supports several parameters:
